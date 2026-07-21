@@ -1,29 +1,23 @@
 import torch
 import numpy as np
 from PIL import Image
-from transformers import CLIPProcessor, CLIPModel
 import io, pickle, os
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = "cpu"
 
-clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
-clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-clip_model.eval()
+clip_model = None
+clip_processor = None
+mlp = None
 
-def get_clip_embedding(image, text):
-    inputs = clip_processor(
-        text=[text], images=[image], return_tensors="pt", padding=True
-    ).to(device)
-    with torch.no_grad():
-        text_emb = clip_model.get_text_features(
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs["attention_mask"]
-        )
-        image_emb = clip_model.get_image_features(pixel_values=inputs["pixel_values"])
-    return torch.cat([text_emb, image_emb], dim=1).cpu().numpy()
+def load_clip():
+    global clip_model, clip_processor
+    if clip_model is None:
+        from transformers import CLIPProcessor, CLIPModel
+        clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+        clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        clip_model.eval()
 
 MLP_PATH = os.getenv("MLP_MODEL_PATH", "scenescript_clip_mlp.pkl")
-mlp = None
 
 def load_model():
     global mlp
@@ -34,11 +28,25 @@ def load_model():
     else:
         print("WARNING: MLP model not found — using zero-shot CLIP fallback")
 
+def get_clip_embedding(image, text):
+    load_clip()
+    inputs = clip_processor(
+        text=[text], images=[image], return_tensors="pt", padding=True
+    )
+    with torch.no_grad():
+        text_emb = clip_model.get_text_features(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"]
+        )
+        image_emb = clip_model.get_image_features(pixel_values=inputs["pixel_values"])
+    return torch.cat([text_emb, image_emb], dim=1).cpu().numpy()
+
 def clip_zeroshot(image, text):
+    load_clip()
     inputs = clip_processor(
         text=["a hateful meme", "a normal meme"],
         images=[image], return_tensors="pt", padding=True
-    ).to(device)
+    )
     with torch.no_grad():
         probs = clip_model(**inputs).logits_per_image.softmax(dim=1).cpu().numpy()[0]
     return int(np.argmax(probs)), float(probs[np.argmax(probs)])
@@ -57,5 +65,6 @@ def predict(image_bytes, text):
         "confidence": round(confidence, 4),
         "text_signal": "high" if abs(float(np.linalg.norm(embedding[0, :512]))) > 0.5 else "medium",
         "model_version": "scenescript-v1",
-        "research_paper": "https://github.com/kanchanlamba/Just-KIDDIN-Knowledge-Infusion-and-Distillation-for-Detection-of-INdecent-Memes"
+        "research_paper": 
+"https://github.com/kanchanlamba/Just-KIDDIN-Knowledge-Infusion-and-Distillation-for-Detection-of-INdecent-Memes"
     }
