@@ -20,7 +20,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
 @app.on_event("startup")
@@ -70,3 +70,17 @@ async def moderate_batch(
     for img, txt in zip(images, texts):
         results.append(predict(await img.read(), txt))
     return {"results": results, "count": len(results)}
+
+@app.post("/v1/explain")
+@limiter.limit("5/minute")
+async def explain(
+    request: Request,
+    image: UploadFile = File(...),
+    text: str = Form(...),
+    api_key: str = Depends(verify_api_key)
+):
+    start = time.time()
+    result = predict(await image.read(), text, explain=True)
+    result["latency_ms"] = round((time.time() - start) * 1000, 2)
+    log_request(api_key, result["label"], result["latency_ms"])
+    return result

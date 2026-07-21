@@ -4,7 +4,6 @@ from PIL import Image
 import io, pickle, os
 
 device = "cpu"
-
 clip_model = None
 clip_processor = None
 mlp = None
@@ -30,9 +29,7 @@ def load_model():
 
 def get_clip_embedding(image, text):
     load_clip()
-    inputs = clip_processor(
-        text=[text], images=[image], return_tensors="pt", padding=True
-    )
+    inputs = clip_processor(text=[text], images=[image], return_tensors="pt", padding=True)
     with torch.no_grad():
         text_emb = clip_model.get_text_features(
             input_ids=inputs["input_ids"],
@@ -51,7 +48,42 @@ def clip_zeroshot(image, text):
         probs = clip_model(**inputs).logits_per_image.softmax(dim=1).cpu().numpy()[0]
     return int(np.argmax(probs)), float(probs[np.argmax(probs)])
 
-def predict(image_bytes, text):
+def explain_text(text):
+    load_clip()
+    words = [w for w in text.split() if len(w) > 2]
+    if not words:
+        return [], []
+    scores = []
+    for word in words:
+        inputs = clip_processor(
+            text=[word],
+            text_pair=None,
+            return_tensors="pt",
+            padding=True
+        )
+        # get similarity of each word to hateful concept
+        hate_inputs = clip_processor(text=["hateful offensive content"], return_tensors="pt", padding=True)
+        with torch.no_grad():
+            word_emb = clip_model.get_text_features(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"]
+            )
+            hate_emb = clip_model.get_text_features(
+                input_ids=hate_inputs["input_ids"],
+                attention_mask=hate_inputs["attention_mask"]
+            )
+        sim = torch.nn.functional.cosine_similarity(word_emb, hate_emb).item()
+        scores.append(sim)
+    # normalize scores
+    scores = np.array(scores)
+    scores = (scores - scores.min()) / (scores.max() - scores.min() + 1e-8)
+    # top 3 words
+    top_idx = np.argsort(scores)[::-1][:3]
+    top_words = [words[i] for i in top_idx]
+    top_weights = [round(float(scores[i]), 3) for i in top_idx]
+    return top_words, top_weights
+
+def predict(image_bytes, text, explain=False):
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     embedding = get_clip_embedding(image, text)
     if mlp is not None:
@@ -60,7 +92,7 @@ def predict(image_bytes, text):
         confidence = float(proba[label])
     else:
         label, confidence = clip_zeroshot(image, text)
-    return {
+    result = {
         "label": "hateful" if label == 1 else "not_hateful",
         "confidence": round(confidence, 4),
         "text_signal": "high" if abs(float(np.linalg.norm(embedding[0, :512]))) > 0.5 else "medium",
@@ -68,3 +100,10 @@ def predict(image_bytes, text):
         "research_paper": 
 "https://github.com/kanchanlamba/Just-KIDDIN-Knowledge-Infusion-and-Distillation-for-Detection-of-INdecent-Memes"
     }
+    if explain:
+        top_words, top_weights = explain_text(text)
+        result["explanation"] = {
+            "top_words": top_words,
+            "weights": top_weights
+        }
+    return result
